@@ -1,3 +1,4 @@
+
 import React, { useState, useCallback, useMemo, useRef } from 'react';
 import type { UploadedImage, GeneratedResult } from './types';
 import { editImageWithGemini } from './services/geminiService';
@@ -11,14 +12,19 @@ declare var JSZip: any;
 
 const COST_PER_IMAGE_USD = 0.0025;
 
-// Simple seeded random number generator for reproducibility
-const seededRandom = (seed: number) => {
-    let s = seed;
-    return () => {
-        s = (s * 9301 + 49297) % 233280;
-        return s / 233280;
-    };
-};
+// A lista de modificadores foi simplificada para ser mais direta, removendo
+// interações complexas como reflexos e oclusão para aumentar a confiabilidade.
+const sizeAndLocationModifiers = [
+  'em um tamanho e posição aleatórios na imagem',
+  'como um objeto pequeno e distante no horizonte',
+  'como um objeto grande e próximo em primeiro plano',
+  'de tamanho médio e a meia distância',
+  'no lado esquerdo da imagem',
+  'no lado direito da imagem',
+  'no centro da imagem',
+  'no horizonte'
+];
+
 
 export default function App(): React.ReactElement {
   const [originalImages, setOriginalImages] = useState<UploadedImage[]>([]);
@@ -39,23 +45,25 @@ export default function App(): React.ReactElement {
     const obstacles = obstaclePrompt.split(',').map(s => s.trim()).filter(Boolean);
     const scenarios = scenarioPrompt.split(',').map(s => s.trim()).filter(Boolean);
     
-    const prompts: string[] = [];
-    if (obstacles.length > 0 && scenarios.length > 0) {
+    const obstaclePrompts: string[] = [];
+    if (obstacles.length > 0) {
       for (const obstacle of obstacles) {
-        for (const scenario of scenarios) {
-          prompts.push(`Adicione um(a) "${obstacle}" à imagem, em um cenário de "${scenario}".`);
+        for (const modifier of sizeAndLocationModifiers) {
+            obstaclePrompts.push(`Adicione um(a) "${obstacle}" ${modifier}.`);
         }
       }
-    } else if (obstacles.length > 0) {
-      for (const obstacle of obstacles) {
-        prompts.push(`Adicione um(a) "${obstacle}" à imagem.`);
-      }
-    } else if (scenarios.length > 0) {
+    }
+
+    const scenarioPrompts: string[] = [];
+    if (scenarios.length > 0) {
       for (const scenario of scenarios) {
-        prompts.push(`Mude o cenário da imagem para "${scenario}".`);
+        scenarioPrompts.push(`Mude o cenário da imagem para "${scenario}".`);
       }
     }
-    return { uniquePromptsCount: prompts.length, modificationPrompts: prompts };
+
+    const allPrompts = [...obstaclePrompts, ...scenarioPrompts];
+    
+    return { uniquePromptsCount: allPrompts.length, modificationPrompts: allPrompts };
   }, [obstaclePrompt, scenarioPrompt]);
 
   const handleImageUpload = (images: UploadedImage[]) => {

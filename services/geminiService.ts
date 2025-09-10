@@ -28,26 +28,24 @@ const isRateLimitError = (error: any): boolean => {
 };
 
 const getPrompt = (originalPrompt: string): string => {
-    const baseInstruction = `You are an expert image editor. Your task is to seamlessly edit the provided image based on the user's request: "${originalPrompt}".`;
+    return `
+**Task:** Edit the image based on the following instruction.
+**Instruction:** "${originalPrompt}"
 
-    const outputInstructions = `
-After editing the image, your response MUST contain two parts:
-1. The edited image.
-2. A text part containing ONLY a markdown JSON block.
+**Critical Rules:**
+You MUST return two parts in your response:
+1.  **The edited image.** This is the primary output. A response without an image is a failure.
+2.  **A single text block.** This block must contain ONLY a markdown JSON object with the following structure:
+    \`\`\`json
+    {
+      "boundingBox": [x_min, y_min, width, height] | null
+    }
+    \`\`\`
+    - If a new object was added, provide its COCO-format bounding box.
+    - If ONLY the scenery was changed (no object added), set "boundingBox" to \`null\`.
 
-The JSON object must specify the bounding box of the primary obstacle you added.
-- The bounding box must be precise and tightly enclose ONLY the newly added obstacle.
-- The coordinates must be in COCO format: [x_min, y_min, width, height], where (x_min, y_min) is the top-left corner of the box.
-
-Example of the required JSON format:
-\`\`\`json
-{
-  "boundingBox": [120, 250, 80, 150]
-}
-\`\`\`
-Do not add any other text, explanation, or confirmation fields. Your text response must strictly contain only the JSON block.`;
-
-    return `${baseInstruction}\n\n${outputInstructions}`;
+Do not add any other text, explanation, or conversation.
+`;
 };
 
 
@@ -110,7 +108,7 @@ export async function editImageWithGemini(
               const match = textPart.text.match(jsonRegex);
               if (match && match[1]) {
                   const parsedJson = JSON.parse(match[1]);
-                  result.boundingBox = parsedJson.boundingBox as BoundingBox;
+                  result.boundingBox = parsedJson.boundingBox; // Safer assignment
               } else {
                  console.warn("Could not find a JSON markdown block in the response:", textPart.text);
                  result.text = textPart.text;
