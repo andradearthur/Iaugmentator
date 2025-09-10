@@ -25,8 +25,6 @@ export default function App(): React.ReactElement {
   const [generatedResults, setGeneratedResults] = useState<GeneratedResult[]>([]);
   const [obstaclePrompt, setObstaclePrompt] = useState<string>('um pequeno barco de pesca vermelho, um navio cargueiro, uma boia de navegação amarela');
   const [scenarioPrompt, setScenarioPrompt] = useState<string>('um dia nublado com neblina leve, pôr do sol com céu alaranjado, mar agitado com ondas altas');
-  const [variationsPerImage, setVariationsPerImage] = useState<number>(1);
-  const [annotationType, setAnnotationType] = useState<'none' | 'mask' | 'bbox'>('mask');
   const [seed, setSeed] = useState<number>(() => Math.floor(Math.random() * 100000));
   
   const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -36,6 +34,29 @@ export default function App(): React.ReactElement {
   const [error, setError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [completionMessage, setCompletionMessage] = useState<string | null>(null);
+
+  const { uniquePromptsCount, modificationPrompts } = useMemo(() => {
+    const obstacles = obstaclePrompt.split(',').map(s => s.trim()).filter(Boolean);
+    const scenarios = scenarioPrompt.split(',').map(s => s.trim()).filter(Boolean);
+    
+    const prompts: string[] = [];
+    if (obstacles.length > 0 && scenarios.length > 0) {
+      for (const obstacle of obstacles) {
+        for (const scenario of scenarios) {
+          prompts.push(`Adicione um(a) "${obstacle}" à imagem, em um cenário de "${scenario}".`);
+        }
+      }
+    } else if (obstacles.length > 0) {
+      for (const obstacle of obstacles) {
+        prompts.push(`Adicione um(a) "${obstacle}" à imagem.`);
+      }
+    } else if (scenarios.length > 0) {
+      for (const scenario of scenarios) {
+        prompts.push(`Mude o cenário da imagem para "${scenario}".`);
+      }
+    }
+    return { uniquePromptsCount: prompts.length, modificationPrompts: prompts };
+  }, [obstaclePrompt, scenarioPrompt]);
 
   const handleImageUpload = (images: UploadedImage[]) => {
     setOriginalImages(images);
@@ -50,11 +71,8 @@ export default function App(): React.ReactElement {
       return;
     }
 
-    const obstacles = obstaclePrompt.split(',').map(s => s.trim()).filter(Boolean);
-    const scenarios = scenarioPrompt.split(',').map(s => s.trim()).filter(Boolean);
-
-    if (obstacles.length === 0 || scenarios.length === 0) {
-      setError('Por favor, forneça pelo menos um obstáculo e um cenário.');
+    if (modificationPrompts.length === 0) {
+      setError('Por favor, forneça pelo menos um obstáculo ou um cenário válido.');
       return;
     }
 
@@ -66,14 +84,13 @@ export default function App(): React.ReactElement {
     setCompletionMessage(null);
     let failedJobsCount = 0;
     
-    const totalJobs = originalImages.length * variationsPerImage;
+    const totalJobs = originalImages.length * modificationPrompts.length;
     setProgress({ current: 0, total: totalJobs });
 
     let currentJob = 0;
-    const random = seededRandom(seed);
 
     for (const image of originalImages) {
-      for (let i = 0; i < variationsPerImage; i++) {
+      for (const fullPrompt of modificationPrompts) {
         if (isStoppingRef.current) {
           console.log("Generation stopped by user.");
           break;
@@ -83,23 +100,18 @@ export default function App(): React.ReactElement {
         setProgress({ current: currentJob, total: totalJobs });
         setStatusMessage(null);
 
-        const randomObstacle = obstacles[Math.floor(random() * obstacles.length)];
-        const randomScenario = scenarios[Math.floor(random() * scenarios.length)];
-        const fullPrompt = `Adicione o seguinte obstáculo à imagem: "${randomObstacle}". Altere o cenário para: "${randomScenario}".`;
-
         try {
           const onRetryCallback = (attempt: number, delay: number) => {
             if(isStoppingRef.current) return;
             setStatusMessage(`Limite da API atingido. Tentando novamente em ${Math.ceil(delay / 1000)}s... (Tentativa ${attempt} de 5)`);
           };
 
-          const result = await editImageWithGemini(image.base64, image.type, fullPrompt, annotationType, seed + currentJob, onRetryCallback);
+          const result = await editImageWithGemini(image.base64, image.type, fullPrompt, onRetryCallback);
 
           if (result.imageUrl) {
             const newResult: GeneratedResult = {
               originalImage: image,
               generatedImageUrl: result.imageUrl,
-              generatedMaskUrl: result.maskUrl ?? undefined,
               generatedText: result.text,
               prompt: fullPrompt,
               boundingBox: result.boundingBox ?? undefined,
@@ -129,7 +141,7 @@ export default function App(): React.ReactElement {
     }
     setCompletionMessage(summary);
     isStoppingRef.current = false;
-  }, [originalImages, obstaclePrompt, scenarioPrompt, variationsPerImage, annotationType, seed]);
+  }, [originalImages, modificationPrompts, seed]);
 
   const handleStopClick = () => {
     isStoppingRef.current = true;
@@ -167,15 +179,6 @@ export default function App(): React.ReactElement {
             generation_seed: seed + index + 1
         };
 
-        // Add mask if it exists
-        if (result.generatedMaskUrl) {
-          const maskResponse = await fetch(result.generatedMaskUrl);
-          const maskBlob = await maskResponse.blob();
-          const maskFileName = `${originalName}${variationSuffix}_mask.png`;
-          zip.file(maskFileName, maskBlob);
-          annotationData.mask_file = maskFileName;
-        }
-
         if (result.boundingBox) {
           annotationData.bounding_box = result.boundingBox;
         }
@@ -199,9 +202,9 @@ export default function App(): React.ReactElement {
   };
 
   const { totalVariations, estimatedCost } = useMemo(() => {
-    const total = originalImages.length * variationsPerImage;
+    const total = originalImages.length * uniquePromptsCount;
     return { totalVariations: total, estimatedCost: total * COST_PER_IMAGE_USD };
-  }, [originalImages, variationsPerImage]);
+  }, [originalImages, uniquePromptsCount]);
 
 
   return (
@@ -220,10 +223,7 @@ export default function App(): React.ReactElement {
                   setObstaclePrompt={setObstaclePrompt}
                   scenarioPrompt={scenarioPrompt}
                   setScenarioPrompt={setScenarioPrompt}
-                  variationsPerImage={variationsPerImage}
-                  setVariationsPerImage={setVariationsPerImage}
-                  annotationType={annotationType}
-                  setAnnotationType={setAnnotationType}
+                  uniquePromptsCount={uniquePromptsCount}
                   seed={seed}
                   setSeed={setSeed}
                   onGenerate={handleGenerateClick}

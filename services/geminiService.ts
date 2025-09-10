@@ -1,4 +1,5 @@
-import { GoogleGenAI, Modality, Type } from "@google/genai";
+// FIX: Removed unused 'Type' import.
+import { GoogleGenAI, Modality } from "@google/genai";
 import type { GenerateContentResponse } from "@google/genai";
 import type { GeminiEditResult, BoundingBox } from '../types';
 
@@ -26,61 +27,42 @@ const isRateLimitError = (error: any): boolean => {
   return false;
 };
 
-const boundingBoxSchema = {
-    type: Type.OBJECT,
-    properties: {
-        x_min: { type: Type.INTEGER, description: "The top-left X coordinate of the bounding box." },
-        y_min: { type: Type.INTEGER, description: "The top-left Y coordinate of the bounding box." },
-        width: { type: Type.INTEGER, description: "The width of the bounding box." },
-        height: { type: Type.INTEGER, description: "The height of the bounding box." }
-    },
-    required: ["x_min", "y_min", "width", "height"]
+const getPrompt = (originalPrompt: string): string => {
+    const baseInstruction = `You are an expert image editor. Your task is to seamlessly edit the provided image based on the user's request: "${originalPrompt}".`;
+
+    const outputInstructions = `
+After editing the image, your response MUST contain two parts:
+1. The edited image.
+2. A text part containing ONLY a markdown JSON block.
+
+The JSON object must specify the bounding box of the primary obstacle you added.
+- The bounding box must be precise and tightly enclose ONLY the newly added obstacle.
+- The coordinates must be in COCO format: [x_min, y_min, width, height], where (x_min, y_min) is the top-left corner of the box.
+
+Example of the required JSON format:
+\`\`\`json
+{
+  "boundingBox": [120, 250, 80, 150]
+}
+\`\`\`
+Do not add any other text, explanation, or confirmation fields. Your text response must strictly contain only the JSON block.`;
+
+    return `${baseInstruction}\n\n${outputInstructions}`;
 };
 
 
-const getPrompt = (originalPrompt: string, annotationType: 'mask' | 'bbox' | 'none'): string => {
-    const baseInstruction = `You are an expert image editing AI. Your task is to perform an edit on an image according to the user's request: '${originalPrompt}'.`;
-
-    if (annotationType === 'bbox') {
-        return `${baseInstruction}
-You MUST return two images and one JSON object.
-
-1.  **Edited Image**: The first image should be the original image modified as requested.
-2.  **Segmentation Mask**: The second image must be a segmentation mask of ONLY the main obstacle added. The added obstacle must be pure white (#FFFFFF), and all other pixels must be pure black (#000000).
-3.  **JSON Response**: You must provide a JSON object with the bounding box of the added obstacle. The coordinates must be integers. The origin (0,0) is the top-left corner.
-
-Strictly follow these output requirements.`;
-    }
-
-    if (annotationType === 'mask') {
-         return `You are an expert image editing AI. Your task is to perform an edit on an image and also provide a precise segmentation mask for the added object.
-
-You will receive an image and a text prompt. You MUST return two images and one text response.
-
-1.  **Edited Image**: The first image should be the original image modified according to the user's request: '${originalPrompt}'
-2.  **Segmentation Mask**: The second image must be a segmentation mask of ONLY the main obstacle added based on the prompt. This mask must be the same dimensions as the edited image. The pixels corresponding to the added obstacle must be pure white (#FFFFFF), and all other pixels must be pure black (#000000).
-3.  **Text Response**: Briefly confirm the action, for example: "Image edited and mask generated."
-
-Strictly follow these output requirements.`;
-    }
-
-    return originalPrompt; // No annotation
-};
-
-
+// FIX: Removed unused 'seed' parameter.
 export async function editImageWithGemini(
   base64ImageData: string,
   mimeType: string,
   prompt: string,
-  annotationType: 'mask' | 'bbox' | 'none',
-  seed: number,
   onRetry?: (attempt: number, delay: number) => void
 ): Promise<GeminiEditResult> {
   const MAX_RETRIES = 5;
   const INITIAL_BACKOFF_MS = 2000;
   
   let lastError: Error | null = null;
-  const finalPrompt = getPrompt(prompt, annotationType);
+  const finalPrompt = getPrompt(prompt);
 
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
@@ -94,46 +76,53 @@ export async function editImageWithGemini(
         },
         config: {
           responseModalities: [Modality.IMAGE, Modality.TEXT],
-          ...(annotationType === 'bbox' && {
-            responseMimeType: "application/json",
-            responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                    boundingBox: boundingBoxSchema,
-                    confirmation: { type: Type.STRING }
-                },
-                required: ["boundingBox", "confirmation"]
-            }
-          }),
-          seed: seed,
         },
       });
 
-      const result: GeminiEditResult = { imageUrl: null, maskUrl: null, text: null, boundingBox: null };
+      if (
+        !response.candidates ||
+        response.candidates.length === 0 ||
+        !response.candidates[0].content ||
+        !response.candidates[0].content.parts ||
+        response.candidates[0].content.parts.length === 0
+      ) {
+        const finishReason = response.candidates?.[0]?.finishReason;
+        console.error("Geração bloqueada ou resposta vazia da API.", { finishReason, response });
+        
+        let errorMessage = "A IA retornou uma resposta vazia.";
+        if (finishReason === 'SAFETY') {
+            errorMessage = "A geração foi bloqueada por motivos de segurança. Tente um prompt mais simples ou diferente.";
+        } else if (finishReason) {
+            errorMessage = `A geração falhou com o motivo: ${finishReason}.`;
+        }
+        
+        throw new Error(errorMessage);
+      }
+
+      const result: GeminiEditResult = { imageUrl: null, text: null, boundingBox: null };
       const parts = response.candidates[0].content.parts;
       const imageParts = parts.filter(p => p.inlineData);
       const textPart = parts.find(p => p.text);
 
       if (textPart) {
-          if (annotationType === 'bbox') {
-              try {
-                  const parsedJson = JSON.parse(textPart.text);
+          try {
+              const jsonRegex = /```json\s*([\s\S]*?)\s*```/;
+              const match = textPart.text.match(jsonRegex);
+              if (match && match[1]) {
+                  const parsedJson = JSON.parse(match[1]);
                   result.boundingBox = parsedJson.boundingBox as BoundingBox;
-                  result.text = parsedJson.confirmation as string;
-              } catch (e) {
-                  console.warn("Could not parse bounding box JSON from text part:", textPart.text);
-                  result.text = textPart.text; // Fallback
+              } else {
+                 console.warn("Could not find a JSON markdown block in the response:", textPart.text);
+                 result.text = textPart.text;
               }
-          } else {
-              result.text = textPart.text;
+          } catch (e) {
+              console.warn("Could not parse bounding box JSON from text part:", textPart.text, e);
+              result.text = textPart.text; // Fallback
           }
       }
 
       if (imageParts.length > 0) {
           result.imageUrl = `data:${imageParts[0].inlineData.mimeType};base64,${imageParts[0].inlineData.data}`;
-          if ((annotationType === 'mask' || annotationType === 'bbox') && imageParts.length > 1) {
-              result.maskUrl = `data:${imageParts[1].inlineData.mimeType};base64,${imageParts[1].inlineData.data}`;
-          }
       }
 
       if (!result.imageUrl) {
@@ -152,6 +141,10 @@ export async function editImageWithGemini(
         await delay(backoffDelay);
       } else {
         console.error("Error calling Gemini API:", error);
+        // Re-throw the original error if it's one of our specific ones, otherwise wrap it.
+        if (error.message.includes("A IA retornou uma resposta vazia") || error.message.includes("A geração foi bloqueada")) {
+            throw error;
+        }
         throw new Error("Falha na comunicação com a API Gemini. Verifique o console para mais detalhes.");
       }
     }
