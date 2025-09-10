@@ -41,7 +41,7 @@ export default function App(): React.ReactElement {
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [completionMessage, setCompletionMessage] = useState<string | null>(null);
 
-  const { uniquePromptsCount, modificationPrompts } = useMemo(() => {
+  const { uniquePromptsCount, modificationPrompts, obstaclePromptsCount } = useMemo(() => {
     const obstacles = obstaclePrompt.split(',').map(s => s.trim()).filter(Boolean);
     const scenarios = scenarioPrompt.split(',').map(s => s.trim()).filter(Boolean);
     
@@ -63,7 +63,11 @@ export default function App(): React.ReactElement {
 
     const allPrompts = [...obstaclePrompts, ...scenarioPrompts];
     
-    return { uniquePromptsCount: allPrompts.length, modificationPrompts: allPrompts };
+    return { 
+        uniquePromptsCount: allPrompts.length, 
+        modificationPrompts: allPrompts, 
+        obstaclePromptsCount: obstaclePrompts.length 
+    };
   }, [obstaclePrompt, scenarioPrompt]);
 
   const handleImageUpload = (images: UploadedImage[]) => {
@@ -210,9 +214,17 @@ export default function App(): React.ReactElement {
   };
 
   const { totalVariations, estimatedCost } = useMemo(() => {
+    const scenarioPromptsCount = uniquePromptsCount - obstaclePromptsCount;
+
+    const obstacleVariationsForCost = originalImages.length * obstaclePromptsCount;
+    const scenarioVariationsForCost = originalImages.length * scenarioPromptsCount;
+    
+    // Obstacle variations cost 2 API calls each, scenery variations cost 1.
+    const totalApiCallCount = (obstacleVariationsForCost * 2) + scenarioVariationsForCost;
     const total = originalImages.length * uniquePromptsCount;
-    return { totalVariations: total, estimatedCost: total * COST_PER_IMAGE_USD };
-  }, [originalImages, uniquePromptsCount]);
+
+    return { totalVariations: total, estimatedCost: totalApiCallCount * COST_PER_IMAGE_USD };
+  }, [originalImages, uniquePromptsCount, obstaclePromptsCount]);
 
 
   return (

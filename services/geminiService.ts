@@ -1,7 +1,10 @@
-// FIX: Removed unused 'Type' import.
+
 import { GoogleGenAI, Modality } from "@google/genai";
 import type { GenerateContentResponse } from "@google/genai";
 import type { GeminiEditResult, BoundingBox } from '../types';
+
+// The type for the request parameters is not exported, so we derive it.
+type GenerateContentParameters = Parameters<typeof ai.models.generateContent>[0];
 
 if (!process.env.API_KEY) {
     throw new Error("API_KEY environment variable is not set.");
@@ -20,115 +23,25 @@ const isRateLimitError = (error: any): boolean => {
       if (parsed?.error?.status === 'RESOURCE_EXHAUSTED' || parsed?.error?.code === 429) {
         return true;
       }
-    } catch (e) {
-      // Not a JSON string
-    }
+    } catch (e) { /* Not a JSON string */ }
   }
   return false;
 };
 
-const getPrompt = (originalPrompt: string): string => {
-    return `
-**Task:** Edit the image based on the following instruction.
-**Instruction:** "${originalPrompt}"
+const MAX_RETRIES = 5;
+const INITIAL_BACKOFF_MS = 2000;
 
-**Critical Rules:**
-You MUST return two parts in your response:
-1.  **The edited image.** This is the primary output. A response without an image is a failure.
-2.  **A single text block.** This block must contain ONLY a markdown JSON object with the following structure:
-    \`\`\`json
-    {
-      "boundingBox": [x_min, y_min, width, height] | null
-    }
-    \`\`\`
-    - If a new object was added, provide its COCO-format bounding box.
-    - If ONLY the scenery was changed (no object added), set "boundingBox" to \`null\`.
-
-Do not add any other text, explanation, or conversation.
-`;
-};
-
-
-// FIX: Removed unused 'seed' parameter.
-export async function editImageWithGemini(
-  base64ImageData: string,
-  mimeType: string,
-  prompt: string,
+/**
+ * A wrapper for the Gemini API call that includes robust retry logic for rate limit errors.
+ */
+async function callGeminiWithRetry(
+  request: GenerateContentParameters,
   onRetry?: (attempt: number, delay: number) => void
-): Promise<GeminiEditResult> {
-  const MAX_RETRIES = 5;
-  const INITIAL_BACKOFF_MS = 2000;
-  
+): Promise<GenerateContentResponse> {
   let lastError: Error | null = null;
-  const finalPrompt = getPrompt(prompt);
-
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
-      const response: GenerateContentResponse = await ai.models.generateContent({
-        model: 'gemini-2.5-flash-image-preview',
-        contents: {
-          parts: [
-            { inlineData: { data: base64ImageData, mimeType: mimeType }},
-            { text: finalPrompt },
-          ],
-        },
-        config: {
-          responseModalities: [Modality.IMAGE, Modality.TEXT],
-        },
-      });
-
-      if (
-        !response.candidates ||
-        response.candidates.length === 0 ||
-        !response.candidates[0].content ||
-        !response.candidates[0].content.parts ||
-        response.candidates[0].content.parts.length === 0
-      ) {
-        const finishReason = response.candidates?.[0]?.finishReason;
-        console.error("Geração bloqueada ou resposta vazia da API.", { finishReason, response });
-        
-        let errorMessage = "A IA retornou uma resposta vazia.";
-        if (finishReason === 'SAFETY') {
-            errorMessage = "A geração foi bloqueada por motivos de segurança. Tente um prompt mais simples ou diferente.";
-        } else if (finishReason) {
-            errorMessage = `A geração falhou com o motivo: ${finishReason}.`;
-        }
-        
-        throw new Error(errorMessage);
-      }
-
-      const result: GeminiEditResult = { imageUrl: null, text: null, boundingBox: null };
-      const parts = response.candidates[0].content.parts;
-      const imageParts = parts.filter(p => p.inlineData);
-      const textPart = parts.find(p => p.text);
-
-      if (textPart) {
-          try {
-              const jsonRegex = /```json\s*([\s\S]*?)\s*```/;
-              const match = textPart.text.match(jsonRegex);
-              if (match && match[1]) {
-                  const parsedJson = JSON.parse(match[1]);
-                  result.boundingBox = parsedJson.boundingBox; // Safer assignment
-              } else {
-                 console.warn("Could not find a JSON markdown block in the response:", textPart.text);
-                 result.text = textPart.text;
-              }
-          } catch (e) {
-              console.warn("Could not parse bounding box JSON from text part:", textPart.text, e);
-              result.text = textPart.text; // Fallback
-          }
-      }
-
-      if (imageParts.length > 0) {
-          result.imageUrl = `data:${imageParts[0].inlineData.mimeType};base64,${imageParts[0].inlineData.data}`;
-      }
-
-      if (!result.imageUrl) {
-          throw new Error("A IA não retornou uma imagem. Tente uma solicitação diferente.");
-      }
-      
-      return result;
-
+      return await ai.models.generateContent(request);
     } catch (error) {
       lastError = error as Error;
       if (isRateLimitError(error)) {
@@ -138,15 +51,103 @@ export async function editImageWithGemini(
         if (onRetry) onRetry(attempt + 1, backoffDelay);
         await delay(backoffDelay);
       } else {
-        console.error("Error calling Gemini API:", error);
-        // Re-throw the original error if it's one of our specific ones, otherwise wrap it.
-        if (error.message.includes("A IA retornou uma resposta vazia") || error.message.includes("A geração foi bloqueada")) {
-            throw error;
-        }
-        throw new Error("Falha na comunicação com a API Gemini. Verifique o console para mais detalhes.");
+        // Non-rate-limit error, re-throw immediately.
+        throw error;
       }
     }
   }
+  throw new Error(`Atingido o limite de taxa da API após ${MAX_RETRIES} tentativas. Erro final: ${lastError?.message}`);
+}
 
-  throw new Error(`Atingido o limite de taxa da API após ${MAX_RETRIES} tentativas. Tente novamente mais tarde. Erro final: ${lastError?.message}`);
+/**
+ * Step 2: Analyzes the difference between two images to find the bounding box of the added object.
+ */
+async function getBoundingBoxForDifference(
+  originalImageBase64: string,
+  generatedImageBase64: string,
+  mimeType: string,
+  onRetry?: (attempt: number, delay: number) => void
+): Promise<BoundingBox | null> {
+  const prompt = `Analise estas duas imagens. A segunda imagem é uma versão editada da primeira, com um único objeto adicionado. Sua tarefa é fornecer a caixa delimitadora (bounding box) do objeto recém-adicionado na segunda imagem. Responda APENAS com um bloco de JSON markdown com a seguinte estrutura: \`\`\`json\n{"boundingBox": [x_min, y_min, width, height]}\`\`\` A origem (0,0) é o canto superior esquerdo.`;
+
+  const request: GenerateContentParameters = {
+    model: 'gemini-2.5-flash-image-preview',
+    contents: {
+      parts: [
+        { inlineData: { data: originalImageBase64, mimeType } },
+        { inlineData: { data: generatedImageBase64, mimeType } },
+        { text: prompt },
+      ],
+    },
+  };
+
+  try {
+    const response = await callGeminiWithRetry(request, onRetry);
+    const textPart = response.candidates?.[0]?.content?.parts?.find(p => p.text);
+
+    if (textPart) {
+      const jsonRegex = /```json\s*([\s\S]*?)\s*```/;
+      const match = textPart.text.match(jsonRegex);
+      if (match && match[1]) {
+        const parsedJson = JSON.parse(match[1]);
+        return parsedJson.boundingBox;
+      }
+    }
+    console.warn("Could not find a valid bounding box JSON in the response.", textPart?.text);
+    return null;
+  } catch (error) {
+    console.error("Error getting bounding box:", error);
+    return null; // A failed bounding box should not stop the whole process.
+  }
+}
+
+/**
+ * Public function to edit an image. Uses a two-step process for reliability:
+ * 1. Generate the image variation with a simple, image-only request.
+ * 2. If an obstacle was added, make a second call to get its bounding box.
+ */
+export async function editImageWithGemini(
+  base64ImageData: string,
+  mimeType: string,
+  prompt: string,
+  onRetry?: (attempt: number, delay: number) => void
+): Promise<GeminiEditResult> {
+  try {
+    // Step 1: Generate the image variation with a simple, direct prompt.
+    const imageGenRequest: GenerateContentParameters = {
+      model: 'gemini-2.5-flash-image-preview',
+      contents: { parts: [{ inlineData: { data: base64ImageData, mimeType } }, { text: prompt }] },
+      config: { responseModalities: [Modality.IMAGE] }, // Critical: Ask for ONLY an image.
+    };
+    
+    const imageGenResponse = await callGeminiWithRetry(imageGenRequest, onRetry);
+    const imagePart = imageGenResponse.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
+
+    if (!imagePart) {
+      const finishReason = imageGenResponse.candidates?.[0]?.finishReason;
+      let errorMessage = "A IA não retornou uma imagem. Tente uma solicitação diferente.";
+      if (finishReason === 'SAFETY') {
+        errorMessage = "A geração foi bloqueada por motivos de segurança. Tente um prompt mais simples.";
+      }
+      throw new Error(errorMessage);
+    }
+
+    const imageUrl = `data:${imagePart.inlineData.mimeType};base64,${imagePart.inlineData.data}`;
+    let boundingBox: BoundingBox | null = null;
+
+    // Step 2: If an obstacle was added, get the bounding box in a separate call.
+    const isObstaclePrompt = prompt.toLowerCase().startsWith('adicione');
+    if (isObstaclePrompt) {
+      boundingBox = await getBoundingBoxForDifference(base64ImageData, imagePart.inlineData.data, mimeType, onRetry);
+    }
+
+    return { imageUrl, text: null, boundingBox };
+
+  } catch (error) {
+    console.error("Error in editImageWithGemini:", error);
+    if (error instanceof Error) {
+      throw error; // Re-throw specific errors for the UI to display.
+    }
+    throw new Error("Falha na comunicação com a API Gemini. Verifique o console para mais detalhes.");
+  }
 }
