@@ -1,4 +1,3 @@
-
 import React, { useState, useCallback, useMemo, useRef } from 'react';
 import type { UploadedImage, GeneratedResult } from './types';
 import { editImageWithGemini } from './services/geminiService';
@@ -34,41 +33,73 @@ export default function App(): React.ReactElement {
   const [seed, setSeed] = useState<number>(() => Math.floor(Math.random() * 100000));
   
   const [isLoading, setIsLoading] = useState<boolean>(false);
-  const isStoppingRef = useRef<boolean>(false); // Use ref to avoid stale state in async loop
+  const isStoppingRef = useRef<boolean>(false);
   
   const [progress, setProgress] = useState<{ current: number; total: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [completionMessage, setCompletionMessage] = useState<string | null>(null);
 
-  const { uniquePromptsCount, modificationPrompts, obstaclePromptsCount } = useMemo(() => {
+  const { 
+    totalVariations, 
+    estimatedCost, 
+    obstaclePrompts, 
+    scenarioPrompts,
+    uniquePromptsCount
+  } = useMemo(() => {
     const obstacles = obstaclePrompt.split(',').map(s => s.trim()).filter(Boolean);
     const scenarios = scenarioPrompt.split(',').map(s => s.trim()).filter(Boolean);
     
-    const obstaclePrompts: string[] = [];
+    const obsPrompts: string[] = [];
     if (obstacles.length > 0) {
       for (const obstacle of obstacles) {
         for (const modifier of sizeAndLocationModifiers) {
-            obstaclePrompts.push(`Adicione um(a) "${obstacle}" ${modifier}.`);
+            obsPrompts.push(`Adicione um(a) "${obstacle}" ${modifier}.`);
         }
       }
     }
 
-    const scenarioPrompts: string[] = [];
+    const scnPrompts: string[] = [];
     if (scenarios.length > 0) {
       for (const scenario of scenarios) {
-        scenarioPrompts.push(`Mude o cenário da imagem para "${scenario}".`);
+        scnPrompts.push(`Mude o cenário da imagem para "${scenario}".`);
       }
     }
 
-    const allPrompts = [...obstaclePrompts, ...scenarioPrompts];
+    const hasObstacles = obsPrompts.length > 0;
+    const hasScenarios = scnPrompts.length > 0;
     
+    let variationsPerImage = 0;
+    if (hasObstacles && hasScenarios) {
+        // Para cada cenário, geramos 1 imagem de cenário + N imagens de obstáculo
+        variationsPerImage = scnPrompts.length * (1 + obsPrompts.length);
+    } else {
+        variationsPerImage = obsPrompts.length + scnPrompts.length;
+    }
+    const totalVars = originalImages.length * variationsPerImage;
+
+    let scenarioApiCallCount = 0;
+    let obstacleApiCallCount = 0;
+    if (hasObstacles && hasScenarios) {
+        scenarioApiCallCount = originalImages.length * scnPrompts.length; // para a base de cenário
+        obstacleApiCallCount = scenarioApiCallCount * obsPrompts.length; // obstaculos em cada cenário
+    } else if (hasObstacles) {
+        obstacleApiCallCount = originalImages.length * obsPrompts.length;
+    } else if (hasScenarios) {
+        scenarioApiCallCount = originalImages.length * scnPrompts.length;
+    }
+    
+    const totalApiCallCount = scenarioApiCallCount + (obstacleApiCallCount * 2);
+    const cost = totalApiCallCount * COST_PER_IMAGE_USD;
+
     return { 
-        uniquePromptsCount: allPrompts.length, 
-        modificationPrompts: allPrompts, 
-        obstaclePromptsCount: obstaclePrompts.length 
+        totalVariations: totalVars, 
+        estimatedCost: cost,
+        obstaclePrompts: obsPrompts,
+        scenarioPrompts: scnPrompts,
+        uniquePromptsCount: obsPrompts.length + scnPrompts.length, // Fallback for single-type generation
     };
-  }, [obstaclePrompt, scenarioPrompt]);
+  }, [obstaclePrompt, scenarioPrompt, originalImages]);
 
   const handleImageUpload = (images: UploadedImage[]) => {
     setOriginalImages(images);
@@ -83,7 +114,7 @@ export default function App(): React.ReactElement {
       return;
     }
 
-    if (modificationPrompts.length === 0) {
+    if (obstaclePrompts.length === 0 && scenarioPrompts.length === 0) {
       setError('Por favor, forneça pelo menos um obstáculo ou um cenário válido.');
       return;
     }
@@ -94,45 +125,98 @@ export default function App(): React.ReactElement {
     setGeneratedResults([]);
     setStatusMessage(null);
     setCompletionMessage(null);
-    let failedJobsCount = 0;
     
-    const totalJobs = originalImages.length * modificationPrompts.length;
+    let failedJobsCount = 0;
+    const totalJobs = totalVariations;
     setProgress({ current: 0, total: totalJobs });
-
     let currentJob = 0;
 
+    const onRetryCallback = (attempt: number, delay: number) => {
+        if(isStoppingRef.current) return;
+        setStatusMessage(`Limite da API atingido. Tentando novamente em ${Math.ceil(delay / 1000)}s... (Tentativa ${attempt} de 5)`);
+    };
+
     for (const image of originalImages) {
-      for (const fullPrompt of modificationPrompts) {
-        if (isStoppingRef.current) {
-          console.log("Generation stopped by user.");
-          break;
-        }
+      const hasObstacles = obstaclePrompts.length > 0;
+      const hasScenarios = scenarioPrompts.length > 0;
 
-        currentJob++;
-        setProgress({ current: currentJob, total: totalJobs });
-        setStatusMessage(null);
+      if (hasObstacles && hasScenarios) {
+        // Lógica de geração em cadeia: Cenário -> Obstáculo
+        for (const scenarioP of scenarioPrompts) {
+          if (isStoppingRef.current) break;
 
-        try {
-          const onRetryCallback = (attempt: number, delay: number) => {
-            if(isStoppingRef.current) return;
-            setStatusMessage(`Limite da API atingido. Tentando novamente em ${Math.ceil(delay / 1000)}s... (Tentativa ${attempt} de 5)`);
-          };
+          // Etapa 1: Gerar imagem de cenário
+          currentJob++;
+          setProgress({ current: currentJob, total: totalJobs });
+          setStatusMessage(`Gerando cenário: "${scenarioP.substring(28, scenarioP.length - 2)}"`);
+          try {
+            const sceneryResult = await editImageWithGemini(image.base64, image.type, scenarioP, onRetryCallback);
+            
+            if (sceneryResult?.imageUrl) {
+              setGeneratedResults(prev => [...prev, {
+                originalImage: image,
+                generatedImageUrl: sceneryResult.imageUrl,
+                generatedText: sceneryResult.text,
+                prompt: scenarioP,
+                boundingBox: undefined,
+              }]);
 
-          const result = await editImageWithGemini(image.base64, image.type, fullPrompt, onRetryCallback);
+              const sceneryImageParts = sceneryResult.imageUrl.split(',');
+              const sceneryImageMimeType = sceneryImageParts[0].split(':')[1].split(';')[0];
+              const sceneryImageBase64 = sceneryImageParts[1];
 
-          if (result.imageUrl) {
-            const newResult: GeneratedResult = {
-              originalImage: image,
-              generatedImageUrl: result.imageUrl,
-              generatedText: result.text,
-              prompt: fullPrompt,
-              boundingBox: result.boundingBox ?? undefined,
-            };
-            setGeneratedResults(prevResults => [...prevResults, newResult]);
+              // Etapa 2: Gerar variações de obstáculo sobre a imagem de cenário
+              for (const obstacleP of obstaclePrompts) {
+                if (isStoppingRef.current) break;
+                currentJob++;
+                setProgress({ current: currentJob, total: totalJobs });
+                setStatusMessage(`Adicionando obstáculo...`);
+                try {
+                  const finalResult = await editImageWithGemini(sceneryImageBase64, sceneryImageMimeType, obstacleP, onRetryCallback);
+                  if (finalResult?.imageUrl) {
+                    setGeneratedResults(prev => [...prev, {
+                      originalImage: image,
+                      generatedImageUrl: finalResult.imageUrl,
+                      generatedText: finalResult.text,
+                      prompt: `${obstacleP} em um cenário de ${scenarioP.substring(28, scenarioP.length - 2)}`,
+                      boundingBox: finalResult.boundingBox ?? undefined,
+                    }]);
+                  } else { failedJobsCount++; }
+                } catch(e) { console.error(e); failedJobsCount++; }
+              }
+            } else {
+              // Falha na geração do cenário significa que os sub-jobs também falham
+              const skippedJobs = obstaclePrompts.length;
+              failedJobsCount += 1 + skippedJobs;
+              currentJob += skippedJobs;
+            }
+          } catch(e) {
+            console.error(e);
+            const skippedJobs = obstaclePrompts.length;
+            failedJobsCount += 1 + skippedJobs;
+            currentJob += skippedJobs;
           }
-        } catch (e) {
-          console.error(`Falha ao gerar a imagem ${currentJob}/${totalJobs} para ${image.name}:`, e);
-          failedJobsCount++;
+        }
+      } else {
+        // Lógica original para apenas obstáculos ou apenas cenários
+        const promptsToRun = [...obstaclePrompts, ...scenarioPrompts];
+        for (const fullPrompt of promptsToRun) {
+          if (isStoppingRef.current) break;
+          currentJob++;
+          setProgress({ current: currentJob, total: totalJobs });
+          setStatusMessage(`Gerando variação...`);
+          try {
+            const result = await editImageWithGemini(image.base64, image.type, fullPrompt, onRetryCallback);
+            if (result.imageUrl) {
+              setGeneratedResults(prevResults => [...prevResults, {
+                originalImage: image,
+                generatedImageUrl: result.imageUrl,
+                generatedText: result.text,
+                prompt: fullPrompt,
+                boundingBox: result.boundingBox ?? undefined,
+              }]);
+            } else { failedJobsCount++; }
+          } catch (e) { console.error(e); failedJobsCount++; }
         }
       }
       if (isStoppingRef.current) break;
@@ -142,23 +226,21 @@ export default function App(): React.ReactElement {
     setProgress(null);
     setStatusMessage(null);
     
-    const jobsAttempted = currentJob;
-    const successCount = jobsAttempted - failedJobsCount;
+    const successCount = currentJob - failedJobsCount;
     let summary;
     if (isStoppingRef.current) {
-      summary = `Geração parada pelo usuário. ${successCount} imagens foram criadas com sucesso de ${jobsAttempted} tentativas.`;
+      summary = `Geração parada pelo usuário. ${successCount} imagens foram criadas com sucesso de ${currentJob} tentativas.`;
     } else {
        summary = `Geração concluída! ${successCount} de ${totalJobs} imagens foram criadas com sucesso.`;
        if (failedJobsCount > 0) summary += ` ${failedJobsCount} falharam.`;
     }
     setCompletionMessage(summary);
     isStoppingRef.current = false;
-  }, [originalImages, modificationPrompts, seed]);
+  }, [originalImages, obstaclePrompts, scenarioPrompts, seed, totalVariations]);
 
   const handleStopClick = () => {
     isStoppingRef.current = true;
     setStatusMessage("Parando a geração após a imagem atual...");
-    // Disable button visually
     const stopButton = document.getElementById('stop-button');
     if (stopButton) {
       stopButton.setAttribute('disabled', 'true');
@@ -177,7 +259,6 @@ export default function App(): React.ReactElement {
         const originalName = result.originalImage.name.split('.').slice(0, -1).join('.') || `image_${index}`;
         const variationSuffix = `_variation_${index + 1}`;
         
-        // Add generated image
         const imgResponse = await fetch(result.generatedImageUrl);
         const imgBlob = await imgResponse.blob();
         const imgFileExtension = result.generatedImageUrl.startsWith('data:image/png') ? 'png' : 'jpeg';
@@ -213,20 +294,6 @@ export default function App(): React.ReactElement {
     document.body.removeChild(link);
   };
 
-  const { totalVariations, estimatedCost } = useMemo(() => {
-    const scenarioPromptsCount = uniquePromptsCount - obstaclePromptsCount;
-
-    const obstacleVariationsForCost = originalImages.length * obstaclePromptsCount;
-    const scenarioVariationsForCost = originalImages.length * scenarioPromptsCount;
-    
-    // Obstacle variations cost 2 API calls each, scenery variations cost 1.
-    const totalApiCallCount = (obstacleVariationsForCost * 2) + scenarioVariationsForCost;
-    const total = originalImages.length * uniquePromptsCount;
-
-    return { totalVariations: total, estimatedCost: totalApiCallCount * COST_PER_IMAGE_USD };
-  }, [originalImages, uniquePromptsCount, obstaclePromptsCount]);
-
-
   return (
     <div className="min-h-screen bg-gray-50 text-gray-800 font-sans">
       <Header estimatedCost={estimatedCost} totalVariations={totalVariations} />
@@ -243,7 +310,7 @@ export default function App(): React.ReactElement {
                   setObstaclePrompt={setObstaclePrompt}
                   scenarioPrompt={scenarioPrompt}
                   setScenarioPrompt={setScenarioPrompt}
-                  uniquePromptsCount={uniquePromptsCount}
+                  uniquePromptsCount={totalVariations / (originalImages.length || 1)}
                   seed={seed}
                   setSeed={setSeed}
                   onGenerate={handleGenerateClick}
