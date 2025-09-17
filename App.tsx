@@ -11,25 +11,24 @@ declare var JSZip: any;
 
 const COST_PER_IMAGE_USD = 0.0025;
 
-// A lista de modificadores foi simplificada para ser mais direta, removendo
-// interações complexas como reflexos e oclusão para aumentar a confiabilidade.
+// A lista de modificadores foi ajustada para priorizar obstáculos no horizonte,
+// tornando-os menos visíveis para atender aos requisitos de treinamento.
 const sizeAndLocationModifiers = [
-  'em um tamanho e posição aleatórios na imagem',
   'como um objeto pequeno e distante no horizonte',
-  'como um objeto grande e próximo em primeiro plano',
+  'no horizonte, levemente à esquerda',
+  'no horizonte, levemente à direita',
+  'no horizonte, ao centro',
+  'como um objeto parcialmente visível no horizonte',
   'de tamanho médio e a meia distância',
-  'no lado esquerdo da imagem',
-  'no lado direito da imagem',
-  'no centro da imagem',
-  'no horizonte'
+  'em um tamanho e posição aleatórios na imagem'
 ];
 
 
 export default function App(): React.ReactElement {
   const [originalImages, setOriginalImages] = useState<UploadedImage[]>([]);
   const [generatedResults, setGeneratedResults] = useState<GeneratedResult[]>([]);
-  const [obstaclePrompt, setObstaclePrompt] = useState<string>('um pequeno barco de pesca vermelho, um navio cargueiro, uma boia de navegação amarela');
-  const [scenarioPrompt, setScenarioPrompt] = useState<string>('um dia nublado com neblina leve, pôr do sol com céu alaranjado, mar agitado com ondas altas');
+  const [obstaclePrompt, setObstaclePrompt] = useState<string>('');
+  const [scenarioPrompt, setScenarioPrompt] = useState<string>('');
   const [seed, setSeed] = useState<number>(() => Math.floor(Math.random() * 100000));
   
   const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -89,6 +88,7 @@ export default function App(): React.ReactElement {
         scenarioApiCallCount = originalImages.length * scnPrompts.length;
     }
     
+    // Cada chamada de obstáculo resulta em 2 chamadas de API (geração + bounding box)
     const totalApiCallCount = scenarioApiCallCount + (obstacleApiCallCount * 2);
     const cost = totalApiCallCount * COST_PER_IMAGE_USD;
 
@@ -150,7 +150,7 @@ export default function App(): React.ReactElement {
           setProgress({ current: currentJob, total: totalJobs });
           setStatusMessage(`Gerando cenário: "${scenarioP.substring(28, scenarioP.length - 2)}"`);
           try {
-            const sceneryResult = await editImageWithGemini(image.base64, image.type, scenarioP, onRetryCallback);
+            const sceneryResult = await editImageWithGemini(image.base64, image.type, scenarioP, false, onRetryCallback);
             
             if (sceneryResult?.imageUrl) {
               setGeneratedResults(prev => [...prev, {
@@ -168,11 +168,18 @@ export default function App(): React.ReactElement {
               // Etapa 2: Gerar variações de obstáculo sobre a imagem de cenário
               for (const obstacleP of obstaclePrompts) {
                 if (isStoppingRef.current) break;
+                
+                // Modificação do prompt para manter o estilo da cena
+                let finalObstaclePrompt = obstacleP;
+                if (scenarioP.includes('Visão noturna infravermelha')) {
+                    finalObstaclePrompt += ' O objeto adicionado deve corresponder ao estilo de visão noturna infravermelha da imagem base (monocromático e com aparência de imagem térmica).';
+                }
+
                 currentJob++;
                 setProgress({ current: currentJob, total: totalJobs });
                 setStatusMessage(`Adicionando obstáculo...`);
                 try {
-                  const finalResult = await editImageWithGemini(sceneryImageBase64, sceneryImageMimeType, obstacleP, onRetryCallback);
+                  const finalResult = await editImageWithGemini(sceneryImageBase64, sceneryImageMimeType, finalObstaclePrompt, true, onRetryCallback);
                   if (finalResult?.imageUrl) {
                     setGeneratedResults(prev => [...prev, {
                       originalImage: image,
@@ -206,7 +213,8 @@ export default function App(): React.ReactElement {
           setProgress({ current: currentJob, total: totalJobs });
           setStatusMessage(`Gerando variação...`);
           try {
-            const result = await editImageWithGemini(image.base64, image.type, fullPrompt, onRetryCallback);
+            const isObstacle = obstaclePrompts.includes(fullPrompt);
+            const result = await editImageWithGemini(image.base64, image.type, fullPrompt, isObstacle, onRetryCallback);
             if (result.imageUrl) {
               setGeneratedResults(prevResults => [...prevResults, {
                 originalImage: image,

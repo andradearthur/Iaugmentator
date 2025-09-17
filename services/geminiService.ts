@@ -110,6 +110,7 @@ export async function editImageWithGemini(
   base64ImageData: string,
   mimeType: string,
   prompt: string,
+  isObstaclePrompt: boolean,
   onRetry?: (attempt: number, delay: number) => void
 ): Promise<GeminiEditResult> {
   try {
@@ -117,7 +118,8 @@ export async function editImageWithGemini(
     const imageGenRequest: GenerateContentParameters = {
       model: 'gemini-2.5-flash-image-preview',
       contents: { parts: [{ inlineData: { data: base64ImageData, mimeType } }, { text: prompt }] },
-      config: { responseModalities: [Modality.IMAGE] }, // Critical: Ask for ONLY an image.
+      // Conforme a documentação, é necessário solicitar ambas as modalidades para edição de imagem.
+      config: { responseModalities: [Modality.IMAGE, Modality.TEXT] },
     };
     
     const imageGenResponse = await callGeminiWithRetry(imageGenRequest, onRetry);
@@ -136,7 +138,6 @@ export async function editImageWithGemini(
     let boundingBox: BoundingBox | null = null;
 
     // Step 2: If an obstacle was added, get the bounding box in a separate call.
-    const isObstaclePrompt = prompt.toLowerCase().startsWith('adicione');
     if (isObstaclePrompt) {
       boundingBox = await getBoundingBoxForDifference(base64ImageData, imagePart.inlineData.data, mimeType, onRetry);
     }

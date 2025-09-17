@@ -1,5 +1,6 @@
-
 import React from 'react';
+import ChecklistInput from './ChecklistInput';
+import { PREDEFINED_OBSTACLES, PREDEFINED_SCENARIOS } from '../constants';
 
 interface ControlPanelProps {
   obstaclePrompt: string;
@@ -38,33 +39,21 @@ export default function ControlPanel({
         <h2 className="text-xl font-bold text-navy mb-4 border-b pb-2">2. Definir Variações</h2>
         
         <div className="space-y-4">
-          <div>
-            <label htmlFor="obstacle-prompt" className="block text-sm font-medium text-gray-700">
-              Obstáculos (separados por vírgula)
-            </label>
-            <textarea
-              id="obstacle-prompt"
-              rows={3}
-              className="mt-1 block w-full shadow-sm sm:text-sm border-gray-300 rounded-md focus:ring-ocean-blue focus:border-ocean-blue"
-              value={obstaclePrompt}
-              onChange={(e) => setObstaclePrompt(e.target.value)}
-              placeholder="Ex: um caiaque, um cardume de peixes, rochas na superfície"
-            />
-          </div>
+          <ChecklistInput
+            label="Obstáculos"
+            predefinedOptions={PREDEFINED_OBSTACLES}
+            value={obstaclePrompt}
+            onChange={setObstaclePrompt}
+            placeholder="Adicione obstáculos personalizados..."
+          />
 
-          <div>
-            <label htmlFor="scenario-prompt" className="block text-sm font-medium text-gray-700">
-              Cenários (separados por vírgula)
-            </label>
-            <textarea
-              id="scenario-prompt"
-              rows={3}
-              className="mt-1 block w-full shadow-sm sm:text-sm border-gray-300 rounded-md focus:ring-ocean-blue focus:border-ocean-blue"
-              value={scenarioPrompt}
-              onChange={(e) => setScenarioPrompt(e.target.value)}
-              placeholder="Ex: ao amanhecer, com chuva forte, em águas cristalinas"
-            />
-          </div>
+          <ChecklistInput
+            label="Cenários"
+            predefinedOptions={PREDEFINED_SCENARIOS}
+            value={scenarioPrompt}
+            onChange={setScenarioPrompt}
+            placeholder="Adicione cenários personalizados..."
+          />
         </div>
       </div>
       
