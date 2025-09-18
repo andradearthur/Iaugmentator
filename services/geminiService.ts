@@ -1,4 +1,3 @@
-
 import { GoogleGenAI, Modality } from "@google/genai";
 import type { GenerateContentResponse } from "@google/genai";
 import type { GeminiEditResult, BoundingBox } from '../types';
@@ -71,7 +70,7 @@ async function getBoundingBoxForDifference(
   const prompt = `Analise estas duas imagens. A segunda imagem é uma versão editada da primeira, com um único objeto adicionado. Sua tarefa é fornecer a caixa delimitadora (bounding box) do objeto recém-adicionado na segunda imagem. Responda APENAS com um bloco de JSON markdown com a seguinte estrutura: \`\`\`json\n{"boundingBox": [x_min, y_min, width, height]}\`\`\` A origem (0,0) é o canto superior esquerdo.`;
 
   const request: GenerateContentParameters = {
-    model: 'gemini-2.5-flash-image-preview',
+    model: 'gemini-2.5-flash',
     contents: {
       parts: [
         { inlineData: { data: originalImageBase64, mimeType } },
@@ -126,12 +125,38 @@ export async function editImageWithGemini(
     const imagePart = imageGenResponse.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
 
     if (!imagePart) {
-      const finishReason = imageGenResponse.candidates?.[0]?.finishReason;
-      let errorMessage = "A IA não retornou uma imagem. Tente uma solicitação diferente.";
-      if (finishReason === 'SAFETY') {
-        errorMessage = "A geração foi bloqueada por motivos de segurança. Tente um prompt mais simples.";
-      }
-      throw new Error(errorMessage);
+        const candidate = imageGenResponse.candidates?.[0];
+        const finishReason = candidate?.finishReason;
+        const safetyRatings = candidate?.safetyRatings;
+        const textResponse = candidate?.content?.parts?.find(p => p.text)?.text;
+
+        console.error("Falha na geração da imagem. Detalhes do candidato:", JSON.stringify(candidate, null, 2));
+
+        let errorMessage = "A IA não retornou uma imagem. Tente uma solicitação diferente.";
+
+        if (finishReason) {
+            switch (finishReason) {
+                case 'SAFETY':
+                    errorMessage = "A geração foi bloqueada por motivos de segurança. Tente um prompt mais simples.";
+                    const blockedRating = safetyRatings?.find(r => r.blocked);
+                    if (blockedRating) {
+                        errorMessage += ` (Categoria: ${blockedRating.category})`;
+                    }
+                    break;
+                case 'RECITATION':
+                    errorMessage = "A geração foi bloqueada por violação de política (recitation). Tente um prompt diferente.";
+                    break;
+                case 'OTHER':
+                    errorMessage = `A geração falhou por um motivo não especificado pela API.`;
+                    break;
+                default:
+                     errorMessage = `A geração falhou. (Motivo: ${finishReason})`;
+            }
+        } else if (textResponse) {
+            errorMessage = `A IA retornou apenas texto em vez de uma imagem: "${textResponse}"`;
+        }
+        
+        throw new Error(errorMessage);
     }
 
     const imageUrl = `data:${imagePart.inlineData.mimeType};base64,${imagePart.inlineData.data}`;

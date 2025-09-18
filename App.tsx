@@ -10,6 +10,10 @@ import Spinner from './components/Spinner';
 declare var JSZip: any;
 
 const COST_PER_IMAGE_USD = 0.0025;
+const REQUEST_COOLDOWN_MS = 1200; // Pausa entre as chamadas para respeitar os limites da API (ex: 60 RPM)
+
+// Função utilitária para a pausa
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 // A lista de modificadores foi ajustada para priorizar obstáculos no horizonte,
 // tornando-os menos visíveis para atender aos requisitos de treinamento.
@@ -151,6 +155,7 @@ export default function App(): React.ReactElement {
           setStatusMessage(`Gerando cenário: "${scenarioP.substring(28, scenarioP.length - 2)}"`);
           try {
             const sceneryResult = await editImageWithGemini(image.base64, image.type, scenarioP, false, onRetryCallback);
+            await delay(REQUEST_COOLDOWN_MS); // Pausa para respeitar o limite de taxa
             
             if (sceneryResult?.imageUrl) {
               setGeneratedResults(prev => [...prev, {
@@ -180,6 +185,7 @@ export default function App(): React.ReactElement {
                 setStatusMessage(`Adicionando obstáculo...`);
                 try {
                   const finalResult = await editImageWithGemini(sceneryImageBase64, sceneryImageMimeType, finalObstaclePrompt, true, onRetryCallback);
+                  await delay(REQUEST_COOLDOWN_MS); // Pausa para respeitar o limite de taxa
                   if (finalResult?.imageUrl) {
                     setGeneratedResults(prev => [...prev, {
                       originalImage: image,
@@ -189,7 +195,14 @@ export default function App(): React.ReactElement {
                       boundingBox: finalResult.boundingBox ?? undefined,
                     }]);
                   } else { failedJobsCount++; }
-                } catch(e) { console.error(e); failedJobsCount++; }
+                } catch(e) {
+                    console.error(e);
+                    if (e instanceof Error && e.message.includes('Atingido o limite de taxa')) {
+                        setError(e.message + " A geração foi interrompida.");
+                        isStoppingRef.current = true;
+                    }
+                    failedJobsCount++;
+                }
               }
             } else {
               // Falha na geração do cenário significa que os sub-jobs também falham
@@ -199,6 +212,10 @@ export default function App(): React.ReactElement {
             }
           } catch(e) {
             console.error(e);
+             if (e instanceof Error && e.message.includes('Atingido o limite de taxa')) {
+                setError(e.message + " A geração foi interrompida.");
+                isStoppingRef.current = true;
+            }
             const skippedJobs = obstaclePrompts.length;
             failedJobsCount += 1 + skippedJobs;
             currentJob += skippedJobs;
@@ -215,6 +232,7 @@ export default function App(): React.ReactElement {
           try {
             const isObstacle = obstaclePrompts.includes(fullPrompt);
             const result = await editImageWithGemini(image.base64, image.type, fullPrompt, isObstacle, onRetryCallback);
+            await delay(REQUEST_COOLDOWN_MS); // Pausa para respeitar o limite de taxa
             if (result.imageUrl) {
               setGeneratedResults(prevResults => [...prevResults, {
                 originalImage: image,
@@ -224,7 +242,14 @@ export default function App(): React.ReactElement {
                 boundingBox: result.boundingBox ?? undefined,
               }]);
             } else { failedJobsCount++; }
-          } catch (e) { console.error(e); failedJobsCount++; }
+          } catch (e) {
+              console.error(e);
+              if (e instanceof Error && e.message.includes('Atingido o limite de taxa')) {
+                setError(e.message + " A geração foi interrompida.");
+                isStoppingRef.current = true;
+              }
+              failedJobsCount++;
+          }
         }
       }
       if (isStoppingRef.current) break;
@@ -236,15 +261,17 @@ export default function App(): React.ReactElement {
     
     const successCount = currentJob - failedJobsCount;
     let summary;
-    if (isStoppingRef.current) {
+    if (isStoppingRef.current && !error) { // Don't override the rate limit error
       summary = `Geração parada pelo usuário. ${successCount} imagens foram criadas com sucesso de ${currentJob} tentativas.`;
-    } else {
+    } else if (!error) {
        summary = `Geração concluída! ${successCount} de ${totalJobs} imagens foram criadas com sucesso.`;
        if (failedJobsCount > 0) summary += ` ${failedJobsCount} falharam.`;
     }
-    setCompletionMessage(summary);
+    if (summary) {
+        setCompletionMessage(summary);
+    }
     isStoppingRef.current = false;
-  }, [originalImages, obstaclePrompts, scenarioPrompts, seed, totalVariations]);
+  }, [originalImages, obstaclePrompts, scenarioPrompts, seed, totalVariations, error]);
 
   const handleStopClick = () => {
     isStoppingRef.current = true;
