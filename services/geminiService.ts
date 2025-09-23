@@ -2,14 +2,15 @@ import { GoogleGenAI, Modality, Type } from "@google/genai";
 import type { GenerateContentResponse } from "@google/genai";
 import type { GeminiEditResult, BoundingBox } from '../types';
 
-// The type for the request parameters is not exported, so we derive it.
-type GenerateContentParameters = Parameters<typeof ai.models.generateContent>[0];
-
 if (!process.env.API_KEY) {
     throw new Error("API_KEY environment variable is not set.");
 }
 
+// FIX: Initialize 'ai' before using it to derive types.
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+
+// The type for the request parameters is not exported, so we derive it.
+type GenerateContentParameters = Parameters<typeof ai.models.generateContent>[0];
 
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -61,12 +62,9 @@ async function callGeminiWithRetry(
 const parseJsonResponse = (responseText: string | undefined): any | null => {
     if (!responseText) return null;
     try {
-      const jsonRegex = /```json\s*([\s\S]*?)\s*```/;
-      const match = responseText.match(jsonRegex);
-      if (match && match[1]) {
-        return JSON.parse(match[1]);
-      }
-      return JSON.parse(responseText);
+      // Use response.text directly as responseMimeType: "application/json" is used.
+      const jsonStr = responseText.replace(/^```json/, '').replace(/```$/, '').trim();
+      return JSON.parse(jsonStr);
     } catch (e) {
       console.warn("Could not parse JSON from response:", responseText);
       return null;
