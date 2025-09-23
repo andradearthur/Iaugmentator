@@ -1,5 +1,12 @@
+export const PREDEFINED_SEA_STATES = [
+    { label: 'Estado 1 (Calmo)', prompt: 'Mude o cenário para um mar totalmente calmo, como um espelho, sem ondas (Sea State 1).'},
+    { label: 'Estado 2 (Leve)', prompt: 'Mude o cenário para um mar com pequenas ondas e algumas cristas de espuma (Sea State 2).'},
+    { label: 'Estado 3 (Moderado)', prompt: 'Mude o cenário para um mar com ondas moderadas e agitado (Sea State 3).'},
+    { label: 'Estado 4 (Agitado)', prompt: 'Mude o cenário para um mar agitado com ondas grandes, céu de tempestade e muitos borrifos (Sea State 4).'},
+];
 
-export const PREDEFINED_SCENARIOS = [
+
+export const PREDEFINED_TIME_OF_DAY = [
     // Iluminação e Hora do Dia
     'Amanhecer com céu em tons de rosa e laranja',
     'Meio-dia com sol forte e sombras duras',
@@ -9,21 +16,17 @@ export const PREDEFINED_SCENARIOS = [
     'Noite escura sem lua e apenas com estrelas',
     'Hora dourada com luz quente e suave',
     'Visão noturna infravermelha monocromática e escura estilo FLIR',
+];
 
+export const PREDEFINED_WEATHER = [
     // Condições Climáticas
     'Céu completamente limpo e azul',
     'Dia nublado com luz difusa e sem sombras',
     'Neblina densa cobrindo o horizonte',
     'Chuva leve com a superfície da água texturizada por gotas',
-    'Tempestade com céu escuro e mar agitado',
-
-    // Condições do Mar
-    'Mar totalmente calmo como um espelho',
-    'Mar com pequenas ondas e cristas de espuma',
-    'Ondas grandes e mar agitado',
-    'Águas tropicais cristalinas e de cor turquesa',
-    'Águas escuras e turvas',
+    'Tempestade com céu escuro',
 ];
+
 
 export const PREDEFINED_OBSTACLES = [
     // Embarcações

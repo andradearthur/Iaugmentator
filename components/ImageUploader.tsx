@@ -11,14 +11,16 @@ export default function ImageUploader({ onImageUpload }: ImageUploaderProps): Re
   const handleFileChange = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
     if (files && files.length > 0) {
-      const imageFiles = Array.from(files).filter(file => file.type.startsWith('image/'));
+      // FIX: Add explicit type for 'file' parameter to resolve 'unknown' type errors.
+      const imageFiles = Array.from(files).filter((file: File) => file.type.startsWith('image/'));
 
       if (imageFiles.length === 0) {
         alert('Nenhum ficheiro de imagem válido selecionado.');
         return;
       }
       
-      const uploadedImagesPromises = imageFiles.map(file => {
+      // FIX: Add explicit type for 'file' parameter to ensure correct type inference downstream.
+      const uploadedImagesPromises = imageFiles.map((file: File) => {
         return new Promise<UploadedImage>((resolve, reject) => {
           const reader = new FileReader();
           reader.onloadend = () => {

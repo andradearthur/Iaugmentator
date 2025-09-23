@@ -1,4 +1,4 @@
-import { GoogleGenAI, Modality } from "@google/genai";
+import { GoogleGenAI, Modality, Type } from "@google/genai";
 import type { GenerateContentResponse } from "@google/genai";
 import type { GeminiEditResult, BoundingBox } from '../types';
 
@@ -58,6 +58,131 @@ async function callGeminiWithRetry(
   throw new Error(`Atingido o limite de taxa da API após ${MAX_RETRIES} tentativas. Erro final: ${lastError?.message}`);
 }
 
+const parseJsonResponse = (responseText: string | undefined): any | null => {
+    if (!responseText) return null;
+    try {
+      const jsonRegex = /```json\s*([\s\S]*?)\s*```/;
+      const match = responseText.match(jsonRegex);
+      if (match && match[1]) {
+        return JSON.parse(match[1]);
+      }
+      return JSON.parse(responseText);
+    } catch (e) {
+      console.warn("Could not parse JSON from response:", responseText);
+      return null;
+    }
+};
+
+/**
+ * Inspired by SafeSea paper: Classifies the sea state of a generated image.
+ */
+export async function classifySeaState(
+    imageBase64: string,
+    mimeType: string,
+    onRetry?: (attempt: number, delay: number) => void
+): Promise<number | null> {
+    const prompt = `Classifique o estado do mar nesta imagem de 1 a 4, onde 1 é calmo, 2 é levemente agitado, 3 é moderado e 4 é agitado. Responda APENAS com um bloco de JSON markdown com a estrutura: \`\`\`json\n{"sea_state": N}\`\`\``;
+    
+    const request: GenerateContentParameters = {
+        model: 'gemini-2.5-flash',
+        contents: { parts: [{ inlineData: { data: imageBase64, mimeType } }, { text: prompt }] },
+        config: {
+            responseMimeType: "application/json",
+            responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                    sea_state: { type: Type.INTEGER }
+                }
+            }
+        }
+    };
+
+    try {
+        const response = await callGeminiWithRetry(request, onRetry);
+        const parsedJson = parseJsonResponse(response.text);
+        return parsedJson?.sea_state ?? null;
+    } catch (error) {
+        console.error("Error classifying sea state:", error);
+        return null;
+    }
+}
+
+
+/**
+ * Inspired by SafeSea paper: Checks if the main object is preserved after editing.
+ */
+export async function checkObjectPreservation(
+    originalImageBase64: string,
+    generatedImageBase64: string,
+    mimeType: string,
+    onRetry?: (attempt: number, delay: number) => void
+): Promise<boolean> {
+    const prompt = `Compare estas duas imagens. A primeira é a original com um veleiro, a segunda é a versão editada. O veleiro principal da primeira imagem ainda está claramente presente, reconhecível e não significativamente distorcido ou cortado na segunda imagem? Responda APENAS com um bloco JSON markdown com a estrutura: \`\`\`json\n{"preserved": true/false}\`\`\``;
+
+    const request: GenerateContentParameters = {
+        model: 'gemini-2.5-flash',
+        contents: { parts: [
+            { inlineData: { data: originalImageBase64, mimeType } }, 
+            { inlineData: { data: generatedImageBase64, mimeType } }, 
+            { text: prompt }
+        ]},
+        config: {
+            responseMimeType: "application/json",
+            responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                    preserved: { type: Type.BOOLEAN }
+                }
+            }
+        }
+    };
+    
+    try {
+        const response = await callGeminiWithRetry(request, onRetry);
+        const parsedJson = parseJsonResponse(response.text);
+        return parsedJson?.preserved ?? false;
+    } catch (error) {
+        console.error("Error checking object preservation:", error);
+        return false; // Assume not preserved on error
+    }
+}
+
+/**
+ * Inspired by Tripathi et al. (2018): Evaluates if an image is a "hard example".
+ * A hard example is one where the main sailboat is less prominent or partially occluded.
+ */
+export async function evaluateHardExample(
+    generatedImageBase64: string,
+    mimeType: string,
+    onRetry?: (attempt: number, delay: number) => void
+): Promise<boolean> {
+    const prompt = `Nesta imagem, o veleiro é o objeto mais proeminente e claramente detectável, ou ele está parcialmente ocluso, distante ou obscurecido pelo cenário/outros objetos (tornando-o um exemplo de detecção difícil)? Responda APENAS com um bloco JSON markdown com a estrutura: \`\`\`json\n{"is_hard_example": true/false}\`\`\`. Retorne 'true' se for um exemplo difícil.`;
+
+    const request: GenerateContentParameters = {
+        model: 'gemini-2.5-flash',
+        contents: { parts: [{ inlineData: { data: generatedImageBase64, mimeType } }, { text: prompt }] },
+        config: {
+            responseMimeType: "application/json",
+            responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                    is_hard_example: { type: Type.BOOLEAN }
+                }
+            }
+        }
+    };
+
+    try {
+        const response = await callGeminiWithRetry(request, onRetry);
+        const parsedJson = parseJsonResponse(response.text);
+        return parsedJson?.is_hard_example ?? false;
+    } catch (error) {
+        console.error("Error evaluating hard example:", error);
+        return false;
+    }
+}
+
+
 /**
  * Step 2: Analyzes the difference between two images to find the bounding box of the added object.
  */
@@ -78,22 +203,24 @@ async function getBoundingBoxForDifference(
         { text: prompt },
       ],
     },
+     config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+                boundingBox: { 
+                    type: Type.ARRAY,
+                    items: { type: Type.NUMBER }
+                }
+            }
+        }
+    }
   };
 
   try {
     const response = await callGeminiWithRetry(request, onRetry);
-    const textPart = response.candidates?.[0]?.content?.parts?.find(p => p.text);
-
-    if (textPart) {
-      const jsonRegex = /```json\s*([\s\S]*?)\s*```/;
-      const match = textPart.text.match(jsonRegex);
-      if (match && match[1]) {
-        const parsedJson = JSON.parse(match[1]);
-        return parsedJson.boundingBox;
-      }
-    }
-    console.warn("Could not find a valid bounding box JSON in the response.", textPart?.text);
-    return null;
+    const parsedJson = parseJsonResponse(response.text);
+    return parsedJson?.boundingBox ?? null;
   } catch (error) {
     console.error("Error getting bounding box:", error);
     return null; // A failed bounding box should not stop the whole process.
@@ -101,9 +228,7 @@ async function getBoundingBoxForDifference(
 }
 
 /**
- * Public function to edit an image. Uses a two-step process for reliability:
- * 1. Generate the image variation with a simple, image-only request.
- * 2. If an obstacle was added, make a second call to get its bounding box.
+ * Public function to edit an image.
  */
 export async function editImageWithGemini(
   base64ImageData: string,
@@ -117,8 +242,10 @@ export async function editImageWithGemini(
     const imageGenRequest: GenerateContentParameters = {
       model: 'gemini-2.5-flash-image-preview',
       contents: { parts: [{ inlineData: { data: base64ImageData, mimeType } }, { text: prompt }] },
-      // Conforme a documentação, é necessário solicitar ambas as modalidades para edição de imagem.
-      config: { responseModalities: [Modality.IMAGE, Modality.TEXT] },
+      config: { 
+        responseModalities: [Modality.IMAGE, Modality.TEXT],
+        systemInstruction: 'Você é uma ferramenta de edição de imagem. Sua única tarefa é modificar a imagem de entrada com base no prompt de texto e retornar a imagem modificada. Não retorne nenhum texto, descrição ou conversa. Apenas a imagem.',
+      },
     };
     
     const imageGenResponse = await callGeminiWithRetry(imageGenRequest, onRetry);

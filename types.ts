@@ -23,4 +23,6 @@ export interface GeneratedResult {
   generatedText: string | null;
   prompt: string;
   boundingBox?: BoundingBox;
+  seaState?: number;
+  isHardExample?: boolean;
 }

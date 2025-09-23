@@ -1,7 +1,7 @@
-
 import React from 'react';
 
-interface IconProps extends React.SVGProps<SVGSVGElement> {}
+// FIX: Changed IconProps to use React.ComponentProps<'svg'> for robust and correct prop typing.
+type IconProps = React.ComponentProps<'svg'>;
 
 export default function SailboatIcon(props: IconProps): React.ReactElement {
   return (
