@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useMemo, useRef } from 'react';
-import type { UploadedImage, GeneratedResult } from './types';
+import type { UploadedImage, GeneratedResult, ObstacleConfig } from './types';
 import { editImageWithGemini, classifySeaState, checkObjectPreservation, evaluateHardExample } from './services/geminiService';
 import { applyPerturbations, PerturbationConfig } from './utils/imageProcessor';
 import Header from './components/Header';
@@ -7,7 +7,6 @@ import ImageUploader from './components/ImageUploader';
 import ControlPanel from './components/ControlPanel';
 import ResultDisplay from './components/ResultDisplay';
 import Spinner from './components/Spinner';
-import TheoryPage from './components/TheoryPage';
 
 declare var JSZip: any;
 
@@ -16,21 +15,10 @@ const REQUEST_COOLDOWN_MS = 1500;
 
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-const sizeAndLocationModifiers = [
-    'a uma distância crível, parecendo pequeno e integrado ao horizonte',
-    'surgindo de forma natural à meia-distância, com reflexos na água',
-    'parcialmente visível na borda esquerda do quadro, como se estivesse passando',
-    'parcialmente visível na borda direita do quadro, como se estivesse passando',
-    'em um tamanho e posição que pareçam realistas e não chamem atenção excessiva',
-    'próximo ao veleiro, em uma escala que sugira perigo de colisão iminente, mantendo o realismo',
-    'muito ao longe, quase imperceptível, para testar a detecção a longa distância'
-];
-
-
 export default function App(): React.ReactElement {
   const [originalImages, setOriginalImages] = useState<UploadedImage[]>([]);
   const [generatedResults, setGeneratedResults] = useState<GeneratedResult[]>([]);
-  const [obstaclePrompt, setObstaclePrompt] = useState<string>('');
+  const [obstacleConfigs, setObstacleConfigs] = useState<ObstacleConfig[]>([]);
   const [scenarioPrompt, setScenarioPrompt] = useState<string>('');
   const [seaStatePrompt, setSeaStatePrompt] = useState<string>('');
   const [verifyPreservation, setVerifyPreservation] = useState<boolean>(true);
@@ -47,9 +35,7 @@ export default function App(): React.ReactElement {
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [completionMessage, setCompletionMessage] = useState<string | null>(null);
 
-  const [view, setView] = useState<'main' | 'theory'>('main');
-
-  const isObstaclePrompt = useMemo(() => obstaclePrompt.split(',').map(s => s.trim()).filter(Boolean).length > 0, [obstaclePrompt]);
+  const isObstaclePrompt = useMemo(() => obstacleConfigs.length > 0, [obstacleConfigs]);
 
   const { 
     totalVariations, 
@@ -57,18 +43,41 @@ export default function App(): React.ReactElement {
     obstaclePrompts, 
     allBasePrompts
   } = useMemo(() => {
-    const obstacles = obstaclePrompt.split(',').map(s => s.trim()).filter(Boolean);
     const scenarios = scenarioPrompt.split(',').map(s => s.trim()).filter(Boolean);
     
-    const obsPrompts: string[] = [];
-    if (obstacles.length > 0) {
-      for (const obstacle of obstacles) {
-        for (const modifier of sizeAndLocationModifiers) {
-            obsPrompts.push(`Integre realisticamente um(a) "${obstacle}" na cena. A adição deve ser perfeitamente mesclada, considerando a iluminação, sombras, e reflexos na água para que pareça completamente natural e parte da foto original. Posicione o obstáculo ${modifier}.`);
-        }
-      }
-    }
+    // --- Obstacle Prompt Generation ---
+    const proximityModifiers = [
+        'muito ao longe, no horizonte',
+        'à meia-distância, com reflexos na água',
+        'próximo ao veleiro'
+    ];
+    const sizeModifiers = [
+        'em um tamanho pequeno e discreto',
+        'em um tamanho grande e proeminente'
+    ];
+    const edgeModifiers = [
+        'parcialmente visível na borda esquerda',
+        'parcialmente visível na borda direita'
+    ];
 
+    const obsPrompts: string[] = [];
+    obstacleConfigs.forEach(config => {
+        const potentialModifiers = [];
+        if (config.modifiers.proximity) potentialModifiers.push(...proximityModifiers);
+        if (config.modifiers.size) potentialModifiers.push(...sizeModifiers);
+        if (config.modifiers.edge) potentialModifiers.push(...edgeModifiers);
+
+        if (potentialModifiers.length === 0) {
+             potentialModifiers.push('em um tamanho e posição que pareçam realistas');
+        }
+
+        for (let i = 0; i < config.variations; i++) {
+            const modifier = potentialModifiers[i % potentialModifiers.length]; // Cycle through modifiers
+            obsPrompts.push(`Integre realisticamente um(a) "${config.name}" na cena. A adição deve ser perfeitamente mesclada, considerando a iluminação, sombras, e reflexos na água. Posicione o obstáculo ${modifier}.`);
+        }
+    });
+
+    // --- Scenario Prompt Generation ---
     const baseScnPrompts: string[] = [];
     if (seaStatePrompt) {
         if (scenarios.length > 0) {
@@ -83,26 +92,17 @@ export default function App(): React.ReactElement {
     }
     
     const finalScenarioPrompts = baseScnPrompts.length > 0 ? baseScnPrompts : [""];
-    const hasObstacles = obsPrompts.length > 0;
     
-    let variationsPerImage = 0;
-    if (hasObstacles) {
-        variationsPerImage = finalScenarioPrompts.length * (1 + obsPrompts.length);
-    } else {
-        variationsPerImage = finalScenarioPrompts.length;
-    }
-    if(obsPrompts.length > 0 && finalScenarioPrompts.length === 1 && finalScenarioPrompts[0] === "") {
-        variationsPerImage = obsPrompts.length;
-    }
+    // --- Cost and Variation Calculation ---
+    const obstacleImageCount = originalImages.length * finalScenarioPrompts.length * obsPrompts.length;
+    const sceneryImageCount = originalImages.length * baseScnPrompts.length;
+    const totalVars = sceneryImageCount + obstacleImageCount;
 
-    const totalVars = originalImages.length * variationsPerImage;
-
-    // Cost calculation
-    let apiCallCount = totalVars; // Base generation
-    if (isObstaclePrompt) apiCallCount += totalVars; // Bbox
-    if (verifyPreservation) apiCallCount += originalImages.length * finalScenarioPrompts.length;
-    if (seaStatePrompt) apiCallCount += originalImages.length * finalScenarioPrompts.length;
-    if (hardenExamples) apiCallCount += totalVars; // Hardness evaluation
+    let apiCallCount = totalVars; // Base generation calls for all images
+    if (isObstaclePrompt) apiCallCount += obstacleImageCount; // Bbox calls
+    if (verifyPreservation) apiCallCount += sceneryImageCount; // Preservation calls
+    if (seaStatePrompt) apiCallCount += sceneryImageCount; // Sea state calls
+    if (hardenExamples) apiCallCount += obstacleImageCount; // Hardness calls
 
     const cost = apiCallCount * COST_PER_IMAGE_USD;
 
@@ -112,7 +112,7 @@ export default function App(): React.ReactElement {
         obstaclePrompts: obsPrompts,
         allBasePrompts: finalScenarioPrompts
     };
-  }, [obstaclePrompt, scenarioPrompt, seaStatePrompt, originalImages, verifyPreservation, hardenExamples, isObstaclePrompt]);
+  }, [obstacleConfigs, scenarioPrompt, seaStatePrompt, originalImages, verifyPreservation, hardenExamples, isObstaclePrompt]);
   
 
   const handleImageUpload = (images: UploadedImage[]) => {
@@ -366,9 +366,7 @@ export default function App(): React.ReactElement {
       <Header 
         estimatedCost={estimatedCost} 
         totalVariations={totalVariations}
-        onViewChange={setView}
       />
-      {view === 'main' ? (
         <main className="container mx-auto p-4 md:p-8">
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
             <div className="lg:col-span-4 bg-white p-6 rounded-2xl shadow-lg border border-gray-200 h-fit">
@@ -378,8 +376,8 @@ export default function App(): React.ReactElement {
               {originalImages.length > 0 && (
                 <div className="mt-6">
                   <ControlPanel
-                    obstaclePrompt={obstaclePrompt}
-                    setObstaclePrompt={setObstaclePrompt}
+                    obstacleConfigs={obstacleConfigs}
+                    setObstacleConfigs={setObstacleConfigs}
                     scenarioPrompt={scenarioPrompt}
                     setScenarioPrompt={setScenarioPrompt}
                     seaStatePrompt={seaStatePrompt}
@@ -460,9 +458,6 @@ export default function App(): React.ReactElement {
             </div>
           </div>
         </main>
-      ) : (
-        <TheoryPage onViewChange={setView} />
-      )}
     </div>
   );
 }

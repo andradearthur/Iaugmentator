@@ -26,3 +26,13 @@ export interface GeneratedResult {
   seaState?: number;
   isHardExample?: boolean;
 }
+
+export interface ObstacleConfig {
+  name: string;
+  variations: number;
+  modifiers: {
+    proximity: boolean;
+    size: boolean;
+    edge: boolean;
+  };
+}

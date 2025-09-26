@@ -2,11 +2,12 @@ import React from 'react';
 import ChecklistInput from './ChecklistInput';
 import { PREDEFINED_OBSTACLES, PREDEFINED_SEA_STATES, PREDEFINED_TIME_OF_DAY, PREDEFINED_WEATHER } from '../constants';
 import type { PerturbationConfig } from '../utils/imageProcessor';
+import type { ObstacleConfig } from '../types';
 
 
 interface ControlPanelProps {
-  obstaclePrompt: string;
-  setObstaclePrompt: (value: string) => void;
+  obstacleConfigs: ObstacleConfig[];
+  setObstacleConfigs: (value: ObstacleConfig[]) => void;
   scenarioPrompt: string;
   setScenarioPrompt: (value: string) => void;
   seaStatePrompt: string;
@@ -32,8 +33,8 @@ const InfoIcon = () => (
 );
 
 export default function ControlPanel({
-  obstaclePrompt,
-  setObstaclePrompt,
+  obstacleConfigs,
+  setObstacleConfigs,
   scenarioPrompt,
   setScenarioPrompt,
   seaStatePrompt,
@@ -66,6 +67,38 @@ export default function ControlPanel({
       setScenarioPrompt(Array.from(new Set(combined)).join(', '));
   }
   
+  const handleObstacleToggle = (obstacleName: string, isCurrentlyChecked: boolean) => {
+    let newConfigs = [...obstacleConfigs];
+    if (isCurrentlyChecked) {
+        newConfigs = newConfigs.filter(c => c.name !== obstacleName);
+    } else {
+        newConfigs.push({
+            name: obstacleName,
+            variations: 3,
+            modifiers: { proximity: true, size: true, edge: false }
+        });
+        newConfigs.sort((a, b) => PREDEFINED_OBSTACLES.indexOf(a.name) - PREDEFINED_OBSTACLES.indexOf(b.name));
+    }
+    setObstacleConfigs(newConfigs);
+  };
+
+  const handleConfigChange = (obstacleName: string, field: string, value: any) => {
+      const newConfigs = obstacleConfigs.map(c => {
+          if (c.name === obstacleName) {
+              const newConfig = { ...c };
+              if (field.startsWith('modifiers.')) {
+                  const modKey = field.split('.')[1] as keyof ObstacleConfig['modifiers'];
+                  newConfig.modifiers = { ...newConfig.modifiers, [modKey]: value };
+              } else if (field === 'variations') {
+                  newConfig.variations = Math.max(1, value); // Ensure at least 1 variation
+              }
+              return newConfig;
+          }
+          return c;
+      });
+      setObstacleConfigs(newConfigs);
+  };
+
   const scenarios = scenarioPrompt.split(',').map(s => s.trim()).filter(Boolean);
   const timeOfDayScenarios = scenarios.filter(s => PREDEFINED_TIME_OF_DAY.includes(s));
   const weatherScenarios = scenarios.filter(s => PREDEFINED_WEATHER.includes(s));
@@ -77,13 +110,62 @@ export default function ControlPanel({
         <h2 className="text-xl font-bold text-navy mb-4 border-b pb-2">2. Definir Variações</h2>
         
         <div className="space-y-4">
-          <ChecklistInput
-            label="Obstáculos"
-            predefinedOptions={PREDEFINED_OBSTACLES}
-            value={obstaclePrompt}
-            onChange={setObstaclePrompt}
-            placeholder="Adicione obstáculos personalizados..."
-          />
+          <div>
+            <label className="block text-sm font-medium text-gray-700">Obstáculos</label>
+            <div className="mt-1 max-h-48 overflow-y-auto border border-gray-300 rounded-md p-2 bg-gray-50 space-y-1">
+              {PREDEFINED_OBSTACLES.map(obstacle => {
+                const config = obstacleConfigs.find(c => c.name === obstacle);
+                const isChecked = !!config;
+
+                return (
+                  <div key={obstacle} className="py-1">
+                    <div className="flex items-center">
+                      <input
+                        id={`cb-${obstacle}`} type="checkbox" checked={isChecked}
+                        onChange={() => handleObstacleToggle(obstacle, isChecked)}
+                        className="h-4 w-4 text-ocean-blue border-gray-300 rounded focus:ring-ocean-blue"
+                      />
+                      <label htmlFor={`cb-${obstacle}`} className="ml-2 block text-sm text-gray-900 cursor-pointer select-none">
+                        {obstacle}
+                      </label>
+                    </div>
+                    {isChecked && config && (
+                      <div className="pl-6 mt-2 space-y-2 pb-2 animate-fade-in">
+                        <div className="flex items-center text-sm">
+                          <label htmlFor={`vars-${obstacle}`} className="text-gray-600 mr-2 font-medium">Variações:</label>
+                          <input
+                            id={`vars-${obstacle}`} type="number" min="1"
+                            value={config.variations}
+                            onChange={e => handleConfigChange(obstacle, 'variations', parseInt(e.target.value, 10) || 1)}
+                            className="w-16 p-1 text-center shadow-sm sm:text-sm border-gray-300 rounded-md focus:ring-ocean-blue focus:border-ocean-blue"
+                          />
+                        </div>
+                        <div className="flex items-center flex-wrap gap-x-4 gap-y-1 text-sm">
+                          <span className="text-gray-600 font-medium">Modificadores:</span>
+                          {(Object.keys(config.modifiers) as Array<keyof ObstacleConfig['modifiers']>).map(modKey => {
+                            const modLabels = { proximity: 'Proximidade', size: 'Tamanho', edge: 'Borda' };
+                            return (
+                              <div key={modKey} className="flex items-center">
+                                <input
+                                  id={`mod-${modKey}-${obstacle}`} type="checkbox"
+                                  checked={config.modifiers[modKey]}
+                                  onChange={e => handleConfigChange(obstacle, `modifiers.${modKey}`, e.target.checked)}
+                                  className="h-4 w-4 text-ocean-blue border-gray-300 rounded focus:ring-ocean-blue"
+                                />
+                                <label htmlFor={`mod-${modKey}-${obstacle}`} className="ml-1 text-gray-800 cursor-pointer select-none">
+                                  {modLabels[modKey]}
+                                </label>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
           
            <div>
               <label className="block text-sm font-medium text-gray-700">Condições do Mar (Sea State)</label>
@@ -214,7 +296,7 @@ export default function ControlPanel({
 
       <div className="bg-sky/10 border border-ocean-blue/20 rounded-lg p-3 text-center">
           <p className="text-sm text-ocean-blue">
-              Serão geradas <span className="font-bold text-lg">{uniquePromptsCount}</span> variações por imagem original.
+              Serão geradas <span className="font-bold text-lg">{uniquePromptsCount.toFixed(0)}</span> variações por imagem original.
           </p>
       </div>
 
