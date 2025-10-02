@@ -1,0 +1,5 @@
+{
+  "name": "AI Sailboat Image Augmentor",
+  "description": "An application for augment a dataset of sailboat images by adding obstacles and changing environmental conditions using AI. This tool helps in creating a varied dataset for training an anti-collision system for autonomous robotic sailboats.",
+  "requestFramePermissions": []
+}
