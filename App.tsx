@@ -272,11 +272,32 @@ export default function App(): React.ReactElement {
       }
     } catch (err: any) {
         console.error("A critical error stopped the generation:", err);
-        const errorMessage = err.message || 'Erro desconhecido';
-        if (errorMessage.includes('Atingido o limite de taxa') || errorMessage.includes('RESOURCE_EXHAUSTED')) {
-            setError(`Erro de Quota/Limite da API. A geração foi interrompida. Por favor, verifique seu plano e detalhes de faturamento na sua conta Google AI Studio e tente novamente mais tarde.`);
+        const rawMessage = err.message || 'Erro desconhecido';
+
+        if (rawMessage.toLowerCase().includes('resource_exhausted') || rawMessage.includes('429')) {
+             setError(`Erro de Quota/Limite da API. A geração foi interrompida. Por favor, verifique seu plano e detalhes de faturamento na sua conta Google AI Studio e tente novamente mais tarde.`);
         } else {
-            setError(`Ocorreu um erro crítico e a geração foi interrompida: ${errorMessage}`);
+            let userFriendlyMessage = `Ocorreu um erro crítico e a geração foi interrompida.`;
+            
+            // Try to extract a cleaner message from a potential JSON payload inside the error.
+            try {
+                // Find the JSON part of the error string, which might be nested.
+                const jsonMatch = rawMessage.match(/{.*}/s);
+                if (jsonMatch && jsonMatch[0]) {
+                    const parsedError = JSON.parse(jsonMatch[0]);
+                    if (parsedError.error && parsedError.error.message) {
+                       userFriendlyMessage += ` Detalhe da API: "${parsedError.error.message}"`;
+                    } else {
+                       userFriendlyMessage += ` Detalhe: ${rawMessage}`;
+                    }
+                } else {
+                    userFriendlyMessage += ` Detalhe: ${rawMessage}`;
+                }
+            } catch (e) {
+                // Not a JSON error, or parsing failed. Use the message as is.
+                userFriendlyMessage += ` Detalhe: ${rawMessage}`;
+            }
+            setError(userFriendlyMessage);
         }
         isStoppingRef.current = true; // Ensure we stop fully
     } finally {

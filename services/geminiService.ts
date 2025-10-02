@@ -1,3 +1,4 @@
+
 import { GoogleGenAI, Modality, Type } from "@google/genai";
 import type { GenerateContentResponse } from "@google/genai";
 import type { GeminiEditResult, BoundingBox } from '../types';
@@ -14,14 +15,25 @@ type GenerateContentParameters = Parameters<typeof ai.models.generateContent>[0]
 
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-const isRateLimitError = (error: any): boolean => {
+const isRetryableError = (error: any): boolean => {
   if (error instanceof Error) {
-    const message = error.message.toLowerCase();
-    if (message.includes('resource_exhausted') || message.includes('429')) return true;
+    const message = error.message;
+    // Check for common rate limit and server error strings
+    if (message.includes('429') || message.includes('500') || message.includes('503') || message.toLowerCase().includes('resource_exhausted')) {
+        return true;
+    }
+    // Check for JSON-formatted errors
     try {
       const parsed = JSON.parse(message);
-      if (parsed?.error?.status === 'RESOURCE_EXHAUSTED' || parsed?.error?.code === 429) {
-        return true;
+      if (parsed?.error) {
+        const code = parsed.error.code;
+        const status = parsed.error.status;
+        if (code === 429 || (code >= 500 && code < 600)) {
+          return true;
+        }
+        if (status === 'RESOURCE_EXHAUSTED') {
+          return true;
+        }
       }
     } catch (e) { /* Not a JSON string */ }
   }
@@ -32,7 +44,7 @@ const MAX_RETRIES = 5;
 const INITIAL_BACKOFF_MS = 2000;
 
 /**
- * A wrapper for the Gemini API call that includes robust retry logic for rate limit errors.
+ * A wrapper for the Gemini API call that includes robust retry logic for retryable errors.
  */
 async function callGeminiWithRetry(
   request: GenerateContentParameters,
@@ -44,19 +56,19 @@ async function callGeminiWithRetry(
       return await ai.models.generateContent(request);
     } catch (error) {
       lastError = error as Error;
-      if (isRateLimitError(error)) {
+      if (isRetryableError(error)) {
         if (attempt === MAX_RETRIES - 1) break;
         const backoffDelay = INITIAL_BACKOFF_MS * Math.pow(2, attempt) + Math.random() * 1000;
-        console.warn(`API rate limit hit. Retrying in ${Math.round(backoffDelay / 1000)}s... (Attempt ${attempt + 1}/${MAX_RETRIES})`);
+        console.warn(`API call failed, but is retryable. Retrying in ${Math.round(backoffDelay / 1000)}s... (Attempt ${attempt + 1}/${MAX_RETRIES})`);
         if (onRetry) onRetry(attempt + 1, backoffDelay);
         await delay(backoffDelay);
       } else {
-        // Non-rate-limit error, re-throw immediately.
+        // Non-retryable error, re-throw immediately.
         throw error;
       }
     }
   }
-  throw new Error(`Atingido o limite de taxa da API após ${MAX_RETRIES} tentativas. Erro final: ${lastError?.message}`);
+  throw new Error(`A chamada à API falhou após ${MAX_RETRIES} tentativas. Erro final: ${lastError?.message}`);
 }
 
 const parseJsonResponse = (responseText: string | undefined): any | null => {
